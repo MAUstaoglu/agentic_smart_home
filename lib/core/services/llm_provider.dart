@@ -134,56 +134,63 @@ class GemmaLlmProvider implements LlmProvider {
         })
         .join('\n');
 
-    String finalPrompt;
+    final navInfo = _getNavigationInfo(finalUserMessage, currentPage, roomEnum);
 
-    String? dynamicHint;
-    if (roomEnum != null) {
-      for (final room in roomEnum) {
-        final roomStr = room.toString();
-
-        if (finalUserMessage.toLowerCase().contains(roomStr.toLowerCase())) {
-          if (roomStr.toLowerCase() != currentPage) {
-            dynamicHint =
-                'HINT: User mentioned "$roomStr". You are currently in "$currentPage". You MUST use `switch_room_page` to go to "$roomStr" first.';
-            debugPrint('Injecting Hint: $dynamicHint');
-            break;
-          } else {
-            dynamicHint =
-                'HINT: You are already in "$currentPage". The user wants to control a device in "$currentPage". DO NOT use `switch_room_page`. Use the specific device tool immediately.';
-            debugPrint('Injecting Stay Hint: $dynamicHint');
-            break;
-          }
-        }
-      }
+    String? fewShotExample;
+    if (navInfo.shouldSwitch && navInfo.targetRoom != null) {
+      fewShotExample =
+          '''
+EXAMPLE:
+User: "Turn on the ${navInfo.targetRoom} light"
+CONTEXT: Current Page: "$currentPage"
+CORRECT RESPONSE:
+{
+  "function_name": "switch_room_page",
+  "arguments": {
+    "room_name": "${navInfo.targetRoom}"
+  }
+}
+''';
     }
 
     final promptContent =
         '''
-${dynamicHint != null ? '$dynamicHint\n' : ''}
-You are an AI Assistant controlling a smart home app.
+${navInfo.hint}
+
+You are an AI Assistant.
 
 CONTEXT:
-- Current Page: "$currentPage"
-- Valid Navigation Targets: [$validRooms]
+- Current Room: "$currentPage"
+- Other Rooms: $validRooms
 
-AVAILABLE TOOLS (STRICT LIST):
+TOOLS:
 $simplifiedTools
 
-DECISION PROTOCOL (FOLLOW IN ORDER):
-1. SEARCH: Look for a function in "AVAILABLE TOOLS" that matches the user's request.
-2. CHECK: Is the function explicitly listed above?
-   - YES: Use it.
-   - NO: STOP. Do not invent a name. You MUST navigate to the correct room.
+INSTRUCTIONS:
+- Select the best tool(s) for the user's request.
+- Use the EXACT function name from the TOOLS list.
+- If the device is in another room, you MUST use `switch_room_page` to go there first.
+- Return ONLY a valid JSON object.
+- For a single action: {"function_name": "...", "arguments": {...}}
+- For MULTIPLE actions: {"function_calls": [{"function_name": "...", "arguments": {...}}, ...]}
+- Do NOT include any other text or markdown formatting.
 
-SEMANTIC FILTER (APPLY ONLY IF TOOL IS IN THE LIST):
-- If checking "AVAILABLE TOOLS" and user said "Light", pick a function with "_light_" or "_color_".
-- If checking "AVAILABLE TOOLS" and user said "Gate", pick a function with "_gate_".
-- If the tool is NOT in "AVAILABLE TOOLS", IGNORE these filters and use `switch_room_page`.
+${fewShotExample ?? ''}
+
+EXAMPLE (Multi-step):
+User: "Set color to red and turn on the light"
+CORRECT RESPONSE:
+{
+  "function_calls": [
+    {"function_name": "set_color_red_living_room", "arguments": {}},
+    {"function_name": "toggle_light_living_room", "arguments": {"on": true}}
+  ]
+}
 
 USER REQUEST: "$finalUserMessage"
-
-Respond with valid JSON only. Do not use markdown code blocks.
 ''';
+
+    String finalPrompt;
     if (_modelFileType == ModelFileType.binary) {
       finalPrompt =
           '<start_of_turn>user\n$promptContent<end_of_turn>\n<start_of_turn>model\n';
@@ -215,135 +222,139 @@ Respond with valid JSON only. Do not use markdown code blocks.
       debugPrint('Response: $response');
       debugPrint('-----------------------------');
 
+      if (navInfo.shouldSwitch && navInfo.targetRoom != null) {
+        bool modelSwitched = false;
+        final responseStr = response.toString();
+
+        if (responseStr.contains('switch_room_page') &&
+            responseStr.contains(navInfo.targetRoom!)) {
+          modelSwitched = true;
+        }
+
+        if (!modelSwitched) {
+          debugPrint(
+            '⚠️ Auto-correcting navigation: Forcing switch to ${navInfo.targetRoom}',
+          );
+          return LlmResponse(
+            functionCalls: [
+              LlmFunctionCall('switch_room_page', {
+                'room_name': navInfo.targetRoom,
+              }, continueAfterNavigation: true),
+            ],
+          );
+        }
+      }
+
       if (response is TextResponse) {
         final responseText = response.token.trim();
 
         debugPrint('Response text: $responseText');
 
+        String fixedText = responseText;
+
+        final codeBlockMatch = RegExp(
+          r'```(?:json)?\s*([\s\S]*?)\s*```',
+        ).firstMatch(responseText);
+        if (codeBlockMatch != null) {
+          fixedText = codeBlockMatch.group(1)!.trim();
+        } else {
+          final start = fixedText.indexOf('{');
+          final end = fixedText.lastIndexOf('}');
+          if (start != -1 && end != -1 && end > start) {
+            fixedText = fixedText.substring(start, end + 1);
+          }
+        }
+
         try {
-          String fixedText = responseText;
-
-          if (fixedText.contains('```')) {
-            fixedText = fixedText
-                .replaceAll('```json', '')
-                .replaceAll('```', '')
-                .trim();
-          }
-
-          final firstBrace = fixedText.indexOf('{');
-          if (firstBrace != -1) {
-            int braceCount = 0;
-            int lastBrace = firstBrace;
-
-            for (int i = firstBrace; i < fixedText.length; i++) {
-              if (fixedText[i] == '{') {
-                braceCount++;
-              } else if (fixedText[i] == '}') {
-                braceCount--;
-                if (braceCount == 0) {
-                  lastBrace = i;
-                  break;
-                }
-              }
-            }
-
-            fixedText = fixedText.substring(firstBrace, lastBrace + 1);
-          }
-
-          if (fixedText.startsWith('"') &&
-              fixedText.endsWith('"') &&
-              fixedText.length > 1) {
-            fixedText = fixedText.substring(1, fixedText.length - 1);
-          }
-
-          try {
-            final decoded = jsonDecode(fixedText);
-            if (decoded is String) {
-              fixedText = decoded;
-            }
-          } catch (_) {
-            debugPrint('JSON string decoding failed, proceeding with original');
-          }
-
-          fixedText = fixedText.replaceAll(
-            '"arguments": {"}',
-            '"arguments": {}',
-          );
-
-          debugPrint('Fixed text: $fixedText');
-
-          if (fixedText.trim().startsWith('"function_calls"')) {
-            fixedText = '{${fixedText.trim()}';
-          } else if (fixedText.trim().startsWith('"function_calls":')) {
-            fixedText = '{${fixedText.trim()}';
-          }
-
-          if (fixedText.contains('"function_calls"')) {
-            final openBrackets = RegExp(r'\[').allMatches(fixedText).length;
-            final closeBrackets = RegExp(r'\]').allMatches(fixedText).length;
-            if (openBrackets > closeBrackets) {
-              fixedText = fixedText.trim();
-
-              if (fixedText.endsWith('}')) {
-                fixedText = fixedText.substring(0, fixedText.length - 1).trim();
-              }
-              fixedText = '$fixedText]}';
-            }
-          }
-
           final jsonResponse = jsonDecode(fixedText);
-          if (jsonResponse is Map) {
-            if (jsonResponse.containsKey('function_calls')) {
-              final calls = jsonResponse['function_calls'] as List;
-              final functionCalls = <LlmFunctionCall>[];
 
-              for (final call in calls) {
-                if (call is Map &&
-                    call.containsKey('function_name') &&
-                    call.containsKey('arguments')) {
-                  final name = call['function_name'] as String;
-                  final args = call['arguments'] as Map<String, dynamic>;
+          LlmFunctionCall? processCall(Map<String, dynamic> call) {
+            if (!call.containsKey('function_name') ||
+                !call.containsKey('arguments')) {
+              return null;
+            }
 
-                  final convertedArgs = <String, dynamic>{};
-                  args.forEach((k, v) {
-                    if (v is int) {
-                      convertedArgs[k] = v.toDouble();
-                    } else {
-                      convertedArgs[k] = v;
-                    }
-                  });
-                  functionCalls.add(
-                    LlmFunctionCall(
-                      name,
-                      convertedArgs,
-                      continueAfterNavigation: name == 'switch_room_page',
-                    ),
-                  );
+            var name = call['function_name'] as String;
+            final rawArgs = call['arguments'];
+            Map<String, dynamic> args = {};
+
+            if (name == 'toggle_garage_light') name = 'toggle_light_garage';
+            if (name == 'toggle_garage_door') name = 'toggle_garage_gate';
+            if (name == 'toggle_room_page') name = 'switch_room_page';
+
+            if (rawArgs is List) {
+              debugPrint(
+                '⚠️ Warning: LLM returned arguments as List. Attempting to map to parameters.',
+              );
+
+              final toolDef = tools.firstWhere(
+                (t) => t['function']['name'] == name,
+                orElse: () => {},
+              );
+
+              if (toolDef.isNotEmpty) {
+                final params =
+                    toolDef['function']['parameters']['properties']
+                        as Map<String, dynamic>;
+                final paramNames = params.keys.toList();
+
+                for (
+                  var i = 0;
+                  i < rawArgs.length && i < paramNames.length;
+                  i++
+                ) {
+                  args[paramNames[i]] = rawArgs[i];
                 }
               }
-              return LlmResponse(functionCalls: functionCalls);
-            } else if (jsonResponse.containsKey('function_name') &&
-                jsonResponse.containsKey('arguments')) {
-              final name = jsonResponse['function_name'] as String;
-              final args = jsonResponse['arguments'] as Map<String, dynamic>;
-              final convertedArgs = <String, dynamic>{};
-              args.forEach((k, v) {
-                if (v is int) {
-                  convertedArgs[k] = v.toDouble();
+            } else if (rawArgs is Map) {
+              args = Map<String, dynamic>.from(rawArgs);
+            }
+
+            final convertedArgs = <String, dynamic>{};
+            args.forEach((k, v) {
+              if (v is int) {
+                convertedArgs[k] = v.toDouble();
+              } else if (v is String) {
+                if (v.toLowerCase() == 'true') {
+                  convertedArgs[k] = true;
+                } else if (v.toLowerCase() == 'false') {
+                  convertedArgs[k] = false;
                 } else {
                   convertedArgs[k] = v;
                 }
-              });
-              return LlmResponse(
-                functionCalls: [
-                  LlmFunctionCall(
-                    name,
-                    convertedArgs,
-                    continueAfterNavigation: name == 'switch_room_page',
-                  ),
-                ],
-              );
+              } else {
+                convertedArgs[k] = v;
+              }
+            });
+
+            return LlmFunctionCall(
+              name,
+              convertedArgs,
+              continueAfterNavigation: name == 'switch_room_page',
+            );
+          }
+
+          if (jsonResponse is Map &&
+              jsonResponse.containsKey('function_name') &&
+              jsonResponse.containsKey('arguments')) {
+            final call = processCall(jsonResponse as Map<String, dynamic>);
+            if (call != null) {
+              return LlmResponse(functionCalls: [call]);
             }
+          } else if (jsonResponse is Map &&
+              jsonResponse.containsKey('function_calls')) {
+            final calls = jsonResponse['function_calls'] as List;
+            final functionCalls = <LlmFunctionCall>[];
+
+            for (final callItem in calls) {
+              if (callItem is Map) {
+                final call = processCall(callItem as Map<String, dynamic>);
+                if (call != null) {
+                  functionCalls.add(call);
+                }
+              }
+            }
+            return LlmResponse(functionCalls: functionCalls);
           }
         } catch (e) {
           debugPrint('JSON parse failed: $e');
@@ -376,13 +387,41 @@ Respond with valid JSON only. Do not use markdown code blocks.
     return toolsList;
   }
 
-  Future<void> dispose() async {
-    if (_isInitialized) {
-      try {
-        _isInitialized = false;
-      } catch (e) {
-        debugPrint('Error during disposal: $e');
+  ({bool shouldSwitch, String? targetRoom, String hint}) _getNavigationInfo(
+    String userMessage,
+    String currentRoom,
+    List<dynamic>? knownRooms,
+  ) {
+    final lowerMsg = userMessage.toLowerCase();
+    final lowerCurrent = currentRoom.toLowerCase();
+
+    if (knownRooms != null) {
+      for (final room in knownRooms) {
+        final lowerRoom = room.toString().toLowerCase();
+        if (lowerMsg.contains(lowerRoom) && lowerRoom != lowerCurrent) {
+          debugPrint(
+            'Navigation Info: Switching to $room (User: "$userMessage", Current: "$currentRoom")',
+          );
+          return (
+            shouldSwitch: true,
+            targetRoom: room.toString(),
+            hint:
+                'HINT: User mentioned "$room". You are currently in "$currentRoom". You MUST use `switch_room_page` to go to "$room" first.',
+          );
+        }
+      }
+
+      if (lowerMsg.contains(lowerCurrent)) {
+        debugPrint('Navigation Info: Staying in $currentRoom');
+        return (
+          shouldSwitch: false,
+          targetRoom: null,
+          hint:
+              'HINT: You are already in "$currentRoom". The user wants to control a device in "$currentRoom". DO NOT use `switch_room_page`. Use the specific device tool immediately.',
+        );
       }
     }
+
+    return (shouldSwitch: false, targetRoom: null, hint: '');
   }
 }

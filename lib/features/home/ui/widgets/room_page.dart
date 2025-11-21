@@ -171,8 +171,8 @@ class RoomPage extends StatelessWidget {
 
   Widget _buildGarageGateControl(BuildContext context, AppState appState) {
     return AiActionWidget(
-      actionId: 'toggle_garage_gate}',
-      description: 'Open or close the garage gate in the ${room.name}',
+      actionId: 'toggle_gate_${room.name.replaceAll(' ', '_').toLowerCase()}',
+      description: 'Open or close the gate in the ${room.name}',
       parameters: const [AgentActionParameter.boolean(name: 'open')],
       onExecuteWithParams: (params) {
         final open = params['open'] as bool?;
