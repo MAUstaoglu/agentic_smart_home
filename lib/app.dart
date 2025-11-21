@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_ui_agent/flutter_ui_agent.dart';
 
+import 'features/home/providers/app_state.dart';
 import 'features/home/ui/pages/home_page.dart';
 
 class SmartHomeApp extends StatelessWidget {
   final AgentService agentService;
-  const SmartHomeApp({super.key, required this.agentService});
+  final AppState appState;
+
+  const SmartHomeApp({
+    super.key,
+    required this.agentService,
+    required this.appState,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -19,12 +26,12 @@ class SmartHomeApp extends StatelessWidget {
           seedColor: Colors.deepPurple,
           brightness: Brightness.dark,
         ).copyWith(surface: const Color(0xFF121212)),
-        appBarTheme: AppBarTheme(
-          backgroundColor: const Color(0xFF1F1F1F),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF1F1F1F),
           elevation: 0,
         ),
       ),
-      home: SmartHomePage(agentService: agentService),
+      home: SmartHomePage(agentService: agentService, appState: appState),
       debugShowCheckedModeBanner: false,
     );
   }

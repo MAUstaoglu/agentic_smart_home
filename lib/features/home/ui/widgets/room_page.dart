@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_ui_agent/flutter_ui_agent.dart';
-import 'package:provider/provider.dart';
 
 import '../../models/room_model.dart';
 import '../../providers/app_state.dart';
 
 class RoomPage extends StatelessWidget {
   final Room room;
-  const RoomPage({super.key, required this.room});
+  final AppState appState;
+
+  const RoomPage({super.key, required this.room, required this.appState});
 
   String _colorToString(Color color) {
     if (color == Colors.red) return 'red';
@@ -18,35 +19,28 @@ class RoomPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<AppState>(
-      builder: (context, appState, child) {
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                room.name,
-                style: Theme.of(context).textTheme.headlineMedium,
-              ),
-              const SizedBox(height: 20),
-              _buildLightControl(context, appState),
-              const SizedBox(height: 20),
-              _buildColorControl(context, appState),
-              const SizedBox(height: 20),
-              _buildThermostatControl(context, appState),
-              if (room.roomName == RoomName.livingRoom) ...[
-                const SizedBox(height: 20),
-                _buildTVControl(context, appState),
-              ],
-              if (room.roomName == RoomName.garage) ...[
-                const SizedBox(height: 20),
-                _buildGarageGateControl(context, appState),
-              ],
-            ],
-          ),
-        );
-      },
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(room.name, style: Theme.of(context).textTheme.headlineMedium),
+          const SizedBox(height: 20),
+          _buildLightControl(context, appState),
+          const SizedBox(height: 20),
+          _buildColorControl(context, appState),
+          const SizedBox(height: 20),
+          _buildThermostatControl(context, appState),
+          if (room.roomName == RoomName.livingRoom) ...[
+            const SizedBox(height: 20),
+            _buildTVControl(context, appState),
+          ],
+          if (room.roomName == RoomName.garage) ...[
+            const SizedBox(height: 20),
+            _buildGarageGateControl(context, appState),
+          ],
+        ],
+      ),
     );
   }
 

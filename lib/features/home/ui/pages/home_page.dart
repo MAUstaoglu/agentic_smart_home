@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_ui_agent/flutter_ui_agent.dart';
-import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:synced_page_views/synced_page_views.dart';
 
@@ -12,7 +11,13 @@ import '../widgets/room_page.dart';
 
 class SmartHomePage extends StatefulWidget {
   final AgentService agentService;
-  const SmartHomePage({super.key, required this.agentService});
+  final AppState appState;
+
+  const SmartHomePage({
+    super.key,
+    required this.agentService,
+    required this.appState,
+  });
 
   @override
   State<SmartHomePage> createState() => _SmartHomePageState();
@@ -43,10 +48,9 @@ class _SmartHomePageState extends State<SmartHomePage> {
     super.initState();
     _initSpeech();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final appState = Provider.of<AppState>(context, listen: false);
-      if (appState.rooms.isNotEmpty) {
+      if (widget.appState.rooms.isNotEmpty) {
         widget.agentService.setCurrentPage(
-          appState.rooms[0].name.replaceAll(' ', '_').toLowerCase(),
+          widget.appState.rooms[0].name.replaceAll(' ', '_').toLowerCase(),
         );
       }
     });
@@ -133,122 +137,128 @@ class _SmartHomePageState extends State<SmartHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final appState = Provider.of<AppState>(context);
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Agentic Smart Home'),
-        centerTitle: true,
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: AiActionWidget(
-                actionId: 'switch_room_page',
-                description: 'Switch to a different room page',
-                parameters: [
-                  AgentActionParameter.string(
-                    name: 'room_name',
-                    enumValues: appState.rooms.map((r) => r.name).toList(),
-                  ),
-                ],
-                onExecuteWithParamsAsync: (params) async {
-                  final roomName = params['room_name'] as String?;
-                  if (roomName != null) {
-                    final index = appState.rooms.indexWhere(
-                      (room) =>
-                          room.name.toLowerCase() == roomName.toLowerCase(),
-                    );
-                    if (index != -1) {
-                      await _syncedController.animateToPage(
-                        index,
-                        duration: const Duration(milliseconds: 300),
-                        curve: Curves.easeInOut,
-                      );
-                    }
-                  }
-                },
-
-                child: SyncedPageViews(
-                  controller: _syncedController,
-                  itemCount: appState.rooms.length,
-                  onPageChanged: (index) {
-                    widget.agentService.setCurrentPage(
-                      appState.rooms[index].name
-                          .replaceAll(' ', '_')
-                          .toLowerCase(),
-                    );
-                  },
-                  primaryItemBuilder: (context, index) {
-                    return RoomPage(room: appState.rooms[index]);
-                  },
-                  secondaryItemBuilder: (context, index) {
-                    final room = appState.rooms[index];
-                    return SizedBox(
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1F1F1F),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        width: 50,
-                        child: Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                room.lightOn
-                                    ? Icons.lightbulb
-                                    : Icons.lightbulb_outline,
-                                color: room.lightOn
-                                    ? room.ambientColor
-                                    : Colors.grey,
-                                size: 32,
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                room.name,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
-                          ),
-                        ),
+    return ListenableBuilder(
+      listenable: widget.appState,
+      builder: (context, child) {
+        final appState = widget.appState;
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Agentic Smart Home'),
+            centerTitle: true,
+          ),
+          body: SafeArea(
+            child: Column(
+              children: [
+                Expanded(
+                  child: AiActionWidget(
+                    actionId: 'switch_room_page',
+                    description: 'Switch to a different room page',
+                    parameters: [
+                      AgentActionParameter.string(
+                        name: 'room_name',
+                        enumValues: appState.rooms.map((r) => r.name).toList(),
                       ),
-                    );
-                  },
-                  layoutBuilder: (primary, secondary) => Column(
-                    children: [
-                      Expanded(child: primary),
-                      SizedBox(height: 80, child: secondary),
                     ],
+                    onExecuteWithParamsAsync: (params) async {
+                      final roomName = params['room_name'] as String?;
+                      if (roomName != null) {
+                        final index = appState.rooms.indexWhere(
+                          (room) =>
+                              room.name.toLowerCase() == roomName.toLowerCase(),
+                        );
+                        if (index != -1) {
+                          await _syncedController.animateToPage(
+                            index,
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeInOut,
+                          );
+                        }
+                      }
+                    },
+                    child: SyncedPageViews(
+                      controller: _syncedController,
+                      itemCount: appState.rooms.length,
+                      onPageChanged: (index) {
+                        widget.agentService.setCurrentPage(
+                          appState.rooms[index].name
+                              .replaceAll(' ', '_')
+                              .toLowerCase(),
+                        );
+                      },
+                      primaryItemBuilder: (context, index) {
+                        return RoomPage(
+                          room: appState.rooms[index],
+                          appState: appState,
+                        );
+                      },
+                      secondaryItemBuilder: (context, index) {
+                        final room = appState.rooms[index];
+                        return SizedBox(
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1F1F1F),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            width: 50,
+                            child: Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    room.lightOn
+                                        ? Icons.lightbulb
+                                        : Icons.lightbulb_outline,
+                                    color: room.lightOn
+                                        ? room.ambientColor
+                                        : Colors.grey,
+                                    size: 32,
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    room.name,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                      layoutBuilder: (primary, secondary) => Column(
+                        children: [
+                          Expanded(child: primary),
+                          SizedBox(height: 80, child: secondary),
+                        ],
+                      ),
+                      onSecondaryPageTap: (index) {
+                        _syncedController.animateToPage(
+                          index,
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeInOut,
+                        );
+                      },
+                    ),
                   ),
-                  onSecondaryPageTap: (index) {
-                    _syncedController.animateToPage(
-                      index,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
-                  },
                 ),
-              ),
+                ChatBar(
+                  textController: _textController,
+                  isAgentProcessing: _isAgentProcessing,
+                  isListening: _isListening,
+                  speechAvailable: _speechAvailable,
+                  soundLevel: _soundLevel,
+                  onToggleListening: _listen,
+                  onProcessCommand: _processCommand,
+                ),
+              ],
             ),
-            ChatBar(
-              textController: _textController,
-              isAgentProcessing: _isAgentProcessing,
-              isListening: _isListening,
-              speechAvailable: _speechAvailable,
-              soundLevel: _soundLevel,
-              onToggleListening: _listen,
-              onProcessCommand: _processCommand,
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }

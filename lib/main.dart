@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_ui_agent/flutter_ui_agent.dart';
-import 'package:provider/provider.dart';
 
 import 'app.dart';
 import 'core/services/llm_provider.dart';
@@ -25,13 +24,12 @@ void main() async {
     ),
   );
 
+  final appState = AppState();
+
   runApp(
     AgentHost(
       agentService: agentService,
-      child: ChangeNotifierProvider(
-        create: (context) => AppState(),
-        child: SmartHomeApp(agentService: agentService),
-      ),
+      child: SmartHomeApp(agentService: agentService, appState: appState),
     ),
   );
 }
