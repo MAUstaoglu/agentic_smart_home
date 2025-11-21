@@ -170,14 +170,26 @@ INSTRUCTIONS:
 - Select the best tool(s) for the user's request.
 - Use the EXACT function name from the TOOLS list.
 - If the device is in another room, you MUST use `switch_room_page` to go there first.
+- Do NOT perform any actions that were not explicitly requested.
 - Return ONLY a valid JSON object.
-- For a single action: {"function_name": "...", "arguments": {...}}
-- For MULTIPLE actions: {"function_calls": [{"function_name": "...", "arguments": {...}}, ...]}
+- ALWAYS use the following format:
+  {"function_calls": [{"function_name": "...", "arguments": {...}}, ...]}
+- Combine ALL actions into a SINGLE list.
+- Do NOT create multiple "function_calls" keys.
 - Do NOT include any other text or markdown formatting.
 
 ${fewShotExample ?? ''}
 
-EXAMPLE (Multi-step):
+EXAMPLES:
+
+User: "Turn on the light"
+CORRECT RESPONSE:
+{
+  "function_calls": [
+    {"function_name": "toggle_light_living_room", "arguments": {"on": true}}
+  ]
+}
+
 User: "Set color to red and turn on the light"
 CORRECT RESPONSE:
 {
