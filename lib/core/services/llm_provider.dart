@@ -13,6 +13,7 @@ import 'resumable_downloader.dart';
 class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
   bool _isInitialized = false;
   ModelFileType _modelFileType = ModelFileType.binary;
+  bool _isMockMode = false;
 
   // Download States
   bool isInstalled = false;
@@ -52,7 +53,15 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
   Future<bool> checkInstallationStatus() async {
     final path = await getModelPath();
     final file = File(path);
-    final exists = await file.exists();
+    final marker = File('$path.completed');
+    final exists = await file.exists() && await marker.exists();
+    
+    if (exists) {
+      final length = await file.length();
+      _isMockMode = length < 10 * 1024 * 1024; // Less than 10MB is Mock Mode
+    } else {
+      _isMockMode = false;
+    }
     
     isInstalled = exists;
     notifyListeners();
@@ -71,8 +80,8 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
       final savePath = await getModelPath();
       
       // Gemma 2B IT quantized model or a small configuration file for quick mock testing
-      final mockUrl = 'https://raw.githubusercontent.com/hryha/flutter_gemma/main/example/pubspec.yaml';
-      final realUrl = 'https://huggingface.co/google/gemma-2b-it-windiw/resolve/main/gemma-2b-it-gpu-int4.bin';
+      final mockUrl = 'https://raw.githubusercontent.com/DenisovAV/flutter_gemma/main/example/pubspec.yaml';
+      final realUrl = 'https://huggingface.co/alexdlov/gemma-2b-it-gpu-int4.bin/resolve/main/gemma-2b-it-gpu-int4.bin';
       final downloadUrl = isMock ? mockUrl : realUrl;
 
       _downloader?.dispose();
@@ -89,6 +98,10 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
           isDownloading = false;
           _downloader?.dispose();
           _downloader = null;
+
+          // Create completed marker file
+          final marker = File('$savePath.completed');
+          await marker.create(recursive: true);
 
           // Register model with FlutterGemma
           await FlutterGemma.installModel(
@@ -123,12 +136,17 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
 
   /// Reset the download (delete partial download)
   Future<void> resetDownload() async {
+    final path = await getModelPath();
+    final marker = File('$path.completed');
+    if (await marker.exists()) {
+      await marker.delete();
+    }
+
     if (_downloader != null) {
       await _downloader!.reset();
       _downloader?.dispose();
       _downloader = null;
     } else {
-      final path = await getModelPath();
       final file = File(path);
       if (await file.exists()) {
         await file.delete();
@@ -166,11 +184,15 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
     });
 
     try {
-      // Load active model into memory
-      _activeModel = await FlutterGemma.getActiveModel(
-        maxTokens: maxTokens,
-        preferredBackend: preferredBackend,
-      );
+      if (!_isMockMode) {
+        // Load active model into memory
+        _activeModel = await FlutterGemma.getActiveModel(
+          maxTokens: maxTokens,
+          preferredBackend: preferredBackend,
+        );
+      } else {
+        await Future.delayed(const Duration(seconds: 1));
+      }
 
       progressTimer.cancel();
       loadProgress = 1.0;
@@ -242,20 +264,24 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
     try {
       final hasModel = await checkInstallationStatus();
       if (hasModel) {
-        final path = await getModelPath();
-        final extension = path.split('.').last.toLowerCase();
-
-        if (extension == 'task' || extension == 'litertlm') {
-          _modelFileType = ModelFileType.task;
+        if (_isMockMode) {
+          _isInitialized = true;
         } else {
-          _modelFileType = ModelFileType.binary;
-        }
+          final path = await getModelPath();
+          final extension = path.split('.').last.toLowerCase();
 
-        await FlutterGemma.installModel(
-          modelType: ModelType.gemmaIt,
-          fileType: _modelFileType,
-        ).fromFile(path).install();
-        _isInitialized = true;
+          if (extension == 'task' || extension == 'litertlm') {
+            _modelFileType = ModelFileType.task;
+          } else {
+            _modelFileType = ModelFileType.binary;
+          }
+
+          await FlutterGemma.installModel(
+            modelType: ModelType.gemmaIt,
+            fileType: _modelFileType,
+          ).fromFile(path).install();
+          _isInitialized = true;
+        }
       } else {
         _isInitialized = false;
       }
@@ -373,6 +399,101 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
         .join('\n');
 
     final navInfo = _getNavigationInfo(finalUserMessage, currentPage, roomEnum);
+
+    if (_isMockMode) {
+      await Future.delayed(const Duration(milliseconds: 600));
+
+      final lowerMsg = finalUserMessage.toLowerCase();
+      final targetRoom = navInfo.targetRoom;
+      final targetRoomSnake = targetRoom?.toLowerCase().replaceAll(' ', '_') ?? currentPage.replaceAll(' ', '_');
+
+      // Check for navigation first
+      if (navInfo.shouldSwitch && targetRoom != null) {
+        final elapsed = const Duration(milliseconds: 600);
+        lastInferenceDuration = elapsed;
+        lastTokensGenerated = 15;
+        lastInferenceSpeed = 25.0;
+        estimatedEnergyConsumed = 3.0 * 0.6; // Mock mode uses CPU profile
+        
+        notifyListeners();
+        
+        return LlmResponse(
+          functionCalls: [
+            LlmFunctionCall('switch_room_page', {
+              'room_name': targetRoom,
+            }, continueAfterNavigation: true),
+          ],
+        );
+      }
+
+      final calls = <LlmFunctionCall>[];
+
+      // Lights
+      if (lowerMsg.contains('light')) {
+        bool turnOn = true;
+        if (lowerMsg.contains('off') || lowerMsg.contains('close') || lowerMsg.contains('shut')) {
+          turnOn = false;
+        }
+        calls.add(LlmFunctionCall('toggle_light_$targetRoomSnake', {'on': turnOn}));
+      }
+
+      // TV
+      if (lowerMsg.contains('tv') || lowerMsg.contains('television')) {
+        bool turnOn = true;
+        if (lowerMsg.contains('off')) {
+          turnOn = false;
+        }
+        calls.add(LlmFunctionCall('toggle_tv_$targetRoomSnake', {'on': turnOn}));
+      }
+
+      // Garage Gate
+      if (lowerMsg.contains('gate') || lowerMsg.contains('door') || lowerMsg.contains('garage')) {
+        if (!lowerMsg.contains('light')) {
+          bool open = true;
+          if (lowerMsg.contains('close') || lowerMsg.contains('shut')) {
+            open = false;
+          }
+          calls.add(LlmFunctionCall('toggle_gate_$targetRoomSnake', {'open': open}));
+        }
+      }
+
+      // Color
+      if (lowerMsg.contains('color') || lowerMsg.contains('red') || lowerMsg.contains('blue') || lowerMsg.contains('green')) {
+        String color = 'blue'; // default
+        if (lowerMsg.contains('red')) color = 'red';
+        if (lowerMsg.contains('green')) color = 'green';
+        calls.add(LlmFunctionCall('set_color_${color}_$targetRoomSnake', {}));
+      }
+
+      // Temperature / Thermostat
+      if (lowerMsg.contains('temp') || lowerMsg.contains('temperature') || lowerMsg.contains('thermostat') || lowerMsg.contains('degree')) {
+        double temp = 22.0;
+        final tempMatch = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(lowerMsg);
+        if (tempMatch != null) {
+          temp = double.tryParse(tempMatch.group(1)!) ?? 22.0;
+        }
+        calls.add(LlmFunctionCall('set_temperature_$targetRoomSnake', {'temperature': temp}));
+      }
+
+      if (calls.isEmpty) {
+        return LlmResponse(text: "I didn't understand that command in mock mode.");
+      }
+
+      final elapsed = const Duration(milliseconds: 600);
+      lastInferenceDuration = elapsed;
+      final responseText = jsonEncode({
+        "function_calls": calls.map((c) => {
+          "function_name": c.name,
+          "arguments": c.args
+        }).toList()
+      });
+      lastTokensGenerated = (responseText.length / 4).ceil();
+      lastInferenceSpeed = lastTokensGenerated / 0.6;
+      estimatedEnergyConsumed = 3.0 * 0.6;
+
+      notifyListeners();
+      return LlmResponse(functionCalls: calls);
+    }
 
     String? fewShotExample;
     if (navInfo.shouldSwitch && navInfo.targetRoom != null) {

@@ -199,17 +199,20 @@ class ResumableDownloader {
   }
 
   /// Pause the download
-  void pause() {
+  Future<void> pause() async {
     if (_status != 'downloading') return;
     _status = 'paused';
 
     if (_subscription != null) {
-      _subscription!.cancel();
+      await _subscription!.cancel();
       _subscription = null;
     }
 
-    _sink?.flush();
-    _sink?.close();
+    try {
+      await _sink?.close();
+    } catch (e) {
+      // Ignore to avoid crash if it was already closed or bound
+    }
     _sink = null;
 
     _request?.abort();
@@ -230,7 +233,7 @@ class ResumableDownloader {
 
   /// Reset the downloader (delete partial file and start over)
   Future<void> reset() async {
-    pause();
+    await pause();
     if (await _file!.exists()) {
       await _file!.delete();
     }
