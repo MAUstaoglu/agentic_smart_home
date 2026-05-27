@@ -29,7 +29,11 @@ void main() async {
   runApp(
     AgentHost(
       agentService: agentService,
-      child: SmartHomeApp(agentService: agentService, appState: appState),
+      child: SmartHomeApp(
+        agentService: agentService,
+        appState: appState,
+        llmProvider: llmProvider,
+      ),
     ),
   );
 }

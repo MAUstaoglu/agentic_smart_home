@@ -5,25 +5,30 @@ import 'package:flutter_ui_agent/flutter_ui_agent.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:synced_page_views/synced_page_views.dart';
 
+import '../../../../core/services/llm_provider.dart';
 import '../../providers/app_state.dart';
 import '../widgets/chat_bar.dart';
+import '../widgets/llm_setup_widget.dart';
+import '../widgets/llm_stats_dialog.dart';
 import '../widgets/room_page.dart';
 
 class SmartHomePage extends StatefulWidget {
   final AgentService agentService;
   final AppState appState;
+  final GemmaLlmProvider llmProvider;
 
   const SmartHomePage({
     super.key,
     required this.agentService,
     required this.appState,
+    required this.llmProvider,
   });
 
   @override
   State<SmartHomePage> createState() => _SmartHomePageState();
 }
 
-class _SmartHomePageState extends State<SmartHomePage> {
+class _SmartHomePageState extends State<SmartHomePage> with WidgetsBindingObserver {
   final _textController = TextEditingController();
   final _syncedController = SyncedPageController(
     secondaryViewportFraction: 0.25,
@@ -37,6 +42,7 @@ class _SmartHomePageState extends State<SmartHomePage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _syncedController.dispose();
     _textController.dispose();
     _speech.stop();
@@ -46,6 +52,8 @@ class _SmartHomePageState extends State<SmartHomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    widget.llmProvider.checkInstallationStatus();
     _initSpeech();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.appState.rooms.isNotEmpty) {
@@ -54,6 +62,14 @@ class _SmartHomePageState extends State<SmartHomePage> {
         );
       }
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      // Unload model when app goes to background to save battery (Requirement 2)
+      widget.llmProvider.unloadModel();
+    }
   }
 
   void _initSpeech() async {
@@ -138,125 +154,147 @@ class _SmartHomePageState extends State<SmartHomePage> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: widget.appState,
-      builder: (context, child) {
-        final appState = widget.appState;
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('Agentic Smart Home'),
-            centerTitle: true,
-          ),
-          body: SafeArea(
-            child: Column(
-              children: [
-                Expanded(
-                  child: AiActionWidget(
-                    actionId: 'switch_room_page',
-                    description: 'Switch to a different room page',
-                    parameters: [
-                      AgentActionParameter.string(
-                        name: 'room_name',
-                        enumValues: appState.rooms.map((r) => r.name).toList(),
-                      ),
-                    ],
-                    onExecuteWithParamsAsync: (params) async {
-                      final roomName = params['room_name'] as String?;
-                      if (roomName != null) {
-                        final index = appState.rooms.indexWhere(
-                          (room) =>
-                              room.name.toLowerCase() == roomName.toLowerCase(),
-                        );
-                        if (index != -1) {
-                          await _syncedController.animateToPage(
-                            index,
-                            duration: const Duration(milliseconds: 300),
-                            curve: Curves.easeInOut,
-                          );
-                        }
-                      }
+      listenable: widget.llmProvider,
+      builder: (context, _) {
+        // If model not installed or loaded, show setup screen
+        if (!widget.llmProvider.isInstalled || !widget.llmProvider.isModelLoaded) {
+          return LlmSetupWidget(provider: widget.llmProvider);
+        }
+
+        return ListenableBuilder(
+          listenable: widget.appState,
+          builder: (context, child) {
+            final appState = widget.appState;
+            return Scaffold(
+              appBar: AppBar(
+                title: const Text('Agentic Smart Home'),
+                centerTitle: true,
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.insights, color: Colors.cyanAccent),
+                    tooltip: 'LLM & Energy Monitor',
+                    onPressed: () {
+                      showDialog(
+                        context: context,
+                        builder: (context) => LlmStatsDialog(provider: widget.llmProvider),
+                      );
                     },
-                    child: SyncedPageViews(
-                      controller: _syncedController,
-                      itemCount: appState.rooms.length,
-                      onPageChanged: (index) {
-                        widget.agentService.setCurrentPage(
-                          appState.rooms[index].name
-                              .replaceAll(' ', '_')
-                              .toLowerCase(),
-                        );
-                      },
-                      primaryItemBuilder: (context, index) {
-                        return RoomPage(
-                          room: appState.rooms[index],
-                          appState: appState,
-                        );
-                      },
-                      secondaryItemBuilder: (context, index) {
-                        final room = appState.rooms[index];
-                        return SizedBox(
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1F1F1F),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            width: 50,
-                            child: Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    room.lightOn
-                                        ? Icons.lightbulb
-                                        : Icons.lightbulb_outline,
-                                    color: room.lightOn
-                                        ? room.ambientColor
-                                        : Colors.grey,
-                                    size: 32,
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    room.name,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                      layoutBuilder: (primary, secondary) => Column(
-                        children: [
-                          Expanded(child: primary),
-                          SizedBox(height: 80, child: secondary),
-                        ],
-                      ),
-                      onSecondaryPageTap: (index) {
-                        _syncedController.animateToPage(
-                          index,
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeInOut,
-                        );
-                      },
-                    ),
                   ),
+                ],
+              ),
+              body: SafeArea(
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: AiActionWidget(
+                        actionId: 'switch_room_page',
+                        description: 'Switch to a different room page',
+                        parameters: [
+                          AgentActionParameter.string(
+                            name: 'room_name',
+                            enumValues: appState.rooms.map((r) => r.name).toList(),
+                          ),
+                        ],
+                        onExecuteWithParamsAsync: (params) async {
+                          final roomName = params['room_name'] as String?;
+                          if (roomName != null) {
+                            final index = appState.rooms.indexWhere(
+                              (room) =>
+                                  room.name.toLowerCase() == roomName.toLowerCase(),
+                            );
+                            if (index != -1) {
+                              await _syncedController.animateToPage(
+                                index,
+                                duration: const Duration(milliseconds: 300),
+                                curve: Curves.easeInOut,
+                              );
+                            }
+                          }
+                        },
+                        child: SyncedPageViews(
+                          controller: _syncedController,
+                          itemCount: appState.rooms.length,
+                          onPageChanged: (index) {
+                            widget.agentService.setCurrentPage(
+                              appState.rooms[index].name
+                                  .replaceAll(' ', '_')
+                                  .toLowerCase(),
+                            );
+                          },
+                          primaryItemBuilder: (context, index) {
+                            return RoomPage(
+                              room: appState.rooms[index],
+                              appState: appState,
+                            );
+                          },
+                          secondaryItemBuilder: (context, index) {
+                            final room = appState.rooms[index];
+                            return SizedBox(
+                              child: Container(
+                                margin: const EdgeInsets.symmetric(horizontal: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1F1F1F),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                width: 50,
+                                child: Center(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        room.lightOn
+                                            ? Icons.lightbulb
+                                            : Icons.lightbulb_outline,
+                                        color: room.lightOn
+                                            ? room.ambientColor
+                                            : Colors.grey,
+                                        size: 32,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        room.name,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          ),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                          layoutBuilder: (primary, secondary) => Column(
+                            children: [
+                              Expanded(child: primary),
+                              SizedBox(height: 80, child: secondary),
+                            ],
+                          ),
+                          onSecondaryPageTap: (index) {
+                            _syncedController.animateToPage(
+                              index,
+                              duration: const Duration(milliseconds: 300),
+                              curve: Curves.easeInOut,
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                    ChatBar(
+                      textController: _textController,
+                      isAgentProcessing: _isAgentProcessing,
+                      isListening: _isListening,
+                      speechAvailable: _speechAvailable,
+                      soundLevel: _soundLevel,
+                      onToggleListening: _listen,
+                      onProcessCommand: _processCommand,
+                    ),
+                  ],
                 ),
-                ChatBar(
-                  textController: _textController,
-                  isAgentProcessing: _isAgentProcessing,
-                  isListening: _isListening,
-                  speechAvailable: _speechAvailable,
-                  soundLevel: _soundLevel,
-                  onToggleListening: _listen,
-                  onProcessCommand: _processCommand,
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );

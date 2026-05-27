@@ -3,15 +3,18 @@ import 'package:flutter_ui_agent/flutter_ui_agent.dart';
 
 import 'features/home/providers/app_state.dart';
 import 'features/home/ui/pages/home_page.dart';
+import 'core/services/llm_provider.dart';
 
 class SmartHomeApp extends StatelessWidget {
   final AgentService agentService;
   final AppState appState;
+  final GemmaLlmProvider llmProvider;
 
   const SmartHomeApp({
     super.key,
     required this.agentService,
     required this.appState,
+    required this.llmProvider,
   });
 
   @override
@@ -31,7 +34,11 @@ class SmartHomeApp extends StatelessWidget {
           elevation: 0,
         ),
       ),
-      home: SmartHomePage(agentService: agentService, appState: appState),
+      home: SmartHomePage(
+        agentService: agentService,
+        appState: appState,
+        llmProvider: llmProvider,
+      ),
       debugShowCheckedModeBanner: false,
     );
   }
