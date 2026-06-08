@@ -30,6 +30,8 @@
 	<string>This app needs access to the microphone for voice commands</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>This app needs access to speech recognition for voice commands</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs access to the camera for the Smart Mirror and Security Camera features.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

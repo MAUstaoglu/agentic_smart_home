@@ -5,7 +5,8 @@ enum RoomName {
   livingRoom('Living Room'),
   bedroom('Bedroom'),
   kitchen('Kitchen'),
-  garage('Garage');
+  garage('Garage'),
+  smartMirror('Smart Mirror');
 
   final String displayName;
   const RoomName(this.displayName);

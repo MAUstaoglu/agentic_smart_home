@@ -49,23 +49,61 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
     return p.join(docDir.path, 'gemma-2b-it-gpu-int4.bin');
   }
 
+  /// Get the path where the mock model configuration is stored locally
+  Future<String> getMockModelPath() async {
+    final docDir = await getApplicationDocumentsDirectory();
+    return p.join(docDir.path, 'gemma-2b-it-gpu-int4.bin.mock');
+  }
+
   /// Check if the model is currently downloaded and installed
   Future<bool> checkInstallationStatus() async {
-    final path = await getModelPath();
-    final file = File(path);
-    final marker = File('$path.completed');
-    final exists = await file.exists() && await marker.exists();
+    final realPath = await getModelPath();
+    final mockPath = await getMockModelPath();
     
-    if (exists) {
-      final length = await file.length();
-      _isMockMode = length < 10 * 1024 * 1024; // Less than 10MB is Mock Mode
+    final realFile = File(realPath);
+    final realMarker = File('$realPath.completed');
+
+    // Migration logic: If a small mock file exists at the real path, delete it
+    // and move the mock marker to the new mock path so the native engine doesn't crash on boot.
+    if (await realFile.exists()) {
+      try {
+        final length = await realFile.length();
+        if (length < 10 * 1024 * 1024) {
+          debugPrint('🧹 Migration: Deleting mock file from the real binary path...');
+          await realFile.delete();
+          if (await realMarker.exists()) {
+            await realMarker.delete();
+          }
+
+          final mockFile = File(mockPath);
+          await mockFile.writeAsString('mock');
+          final mockMarker = File('$mockPath.completed');
+          await mockMarker.create(recursive: true);
+        }
+      } catch (e) {
+        debugPrint('Error migrating mock file: $e');
+      }
+    }
+
+    final realExists = await realFile.exists() && await realMarker.exists();
+    
+    final mockFile = File(mockPath);
+    final mockMarker = File('$mockPath.completed');
+    final mockExists = await mockFile.exists() && await mockMarker.exists();
+    
+    if (realExists) {
+      _isMockMode = false;
+      isInstalled = true;
+    } else if (mockExists) {
+      _isMockMode = true;
+      isInstalled = true;
     } else {
       _isMockMode = false;
+      isInstalled = false;
     }
     
-    isInstalled = exists;
     notifyListeners();
-    return exists;
+    return isInstalled;
   }
 
   /// Start downloading the model (supports resuming)
@@ -77,7 +115,7 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
     notifyListeners();
 
     try {
-      final savePath = await getModelPath();
+      final savePath = isMock ? await getMockModelPath() : await getModelPath();
       
       // Gemma 2B IT quantized model or a small configuration file for quick mock testing
       final mockUrl = 'https://raw.githubusercontent.com/DenisovAV/flutter_gemma/main/example/pubspec.yaml';
@@ -103,13 +141,16 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
           final marker = File('$savePath.completed');
           await marker.create(recursive: true);
 
-          // Register model with FlutterGemma
-          await FlutterGemma.installModel(
-            modelType: ModelType.gemmaIt,
-            fileType: ModelFileType.binary,
-          ).fromFile(savePath).install();
+          if (!isMock) {
+            // Register real model with FlutterGemma
+            await FlutterGemma.installModel(
+              modelType: ModelType.gemmaIt,
+              fileType: ModelFileType.binary,
+            ).fromFile(savePath).install();
+          }
 
           isInstalled = true;
+          _isMockMode = isMock;
           _isInitialized = true;
         } else if (info.status == 'failed') {
           isDownloading = false;
@@ -136,24 +177,38 @@ class GemmaLlmProvider extends ChangeNotifier implements LlmProvider {
 
   /// Reset the download (delete partial download)
   Future<void> resetDownload() async {
-    final path = await getModelPath();
-    final marker = File('$path.completed');
-    if (await marker.exists()) {
-      await marker.delete();
+    final realPath = await getModelPath();
+    final mockPath = await getMockModelPath();
+
+    // Reset real model
+    final realMarker = File('$realPath.completed');
+    if (await realMarker.exists()) {
+      await realMarker.delete();
+    }
+    final realFile = File(realPath);
+    if (await realFile.exists()) {
+      await realFile.delete();
+    }
+
+    // Reset mock model
+    final mockMarker = File('$mockPath.completed');
+    if (await mockMarker.exists()) {
+      await mockMarker.delete();
+    }
+    final mockFile = File(mockPath);
+    if (await mockFile.exists()) {
+      await mockFile.delete();
     }
 
     if (_downloader != null) {
       await _downloader!.reset();
       _downloader?.dispose();
       _downloader = null;
-    } else {
-      final file = File(path);
-      if (await file.exists()) {
-        await file.delete();
-      }
     }
+
     isInstalled = false;
     _isInitialized = false;
+    _isMockMode = false;
     downloadProgress = 0.0;
     downloadSpeedMb = 0.0;
     downloadTimeRemaining = Duration.zero;
@@ -582,171 +637,176 @@ USER REQUEST: "$finalUserMessage"
         tools: _buildToolsDescription(tools),
       );
 
-      await chat.addQueryChunk(Message.text(text: finalPrompt, isUser: true));
+      try {
+        await chat.addQueryChunk(Message.text(text: finalPrompt, isUser: true));
 
-      final response = await chat.generateChatResponse();
+        final response = await chat.generateChatResponse();
 
-      debugPrint('--- Response from Native ---');
-      debugPrint('Response: $response');
-      debugPrint('-----------------------------');
+        debugPrint('--- Response from Native ---');
+        debugPrint('Response: $response');
+        debugPrint('-----------------------------');
 
-      // Update Telemetry metrics
-      final elapsed = DateTime.now().difference(startTime);
-      lastInferenceDuration = elapsed;
-      
-      final textResponse = response.toString();
-      lastTokensGenerated = (textResponse.length / 4).ceil(); // Average 4 characters per token
-      lastInferenceSpeed = elapsed.inMilliseconds > 0 
-          ? (lastTokensGenerated / (elapsed.inMilliseconds / 1000.0))
-          : 0.0;
-      
-      // Peak GPU is ~6 Watts, CPU is ~3 Watts. Estimating Joule usage:
-      final power = preferredBackend == PreferredBackend.gpu ? 6.0 : 3.0;
-      estimatedEnergyConsumed = power * (elapsed.inMilliseconds / 1000.0);
+        // Update Telemetry metrics
+        final elapsed = DateTime.now().difference(startTime);
+        lastInferenceDuration = elapsed;
+        
+        final textResponse = response.toString();
+        lastTokensGenerated = (textResponse.length / 4).ceil(); // Average 4 characters per token
+        lastInferenceSpeed = elapsed.inMilliseconds > 0 
+            ? (lastTokensGenerated / (elapsed.inMilliseconds / 1000.0))
+            : 0.0;
+        
+        // Peak GPU is ~6 Watts, CPU is ~3 Watts. Estimating Joule usage:
+        final power = preferredBackend == PreferredBackend.gpu ? 6.0 : 3.0;
+        estimatedEnergyConsumed = power * (elapsed.inMilliseconds / 1000.0);
 
-      _resetIdleTimer();
-      notifyListeners();
+        _resetIdleTimer();
+        notifyListeners();
 
-      if (navInfo.shouldSwitch && navInfo.targetRoom != null) {
-        bool modelSwitched = false;
-        final responseStr = response.toString();
+        if (navInfo.shouldSwitch && navInfo.targetRoom != null) {
+          bool modelSwitched = false;
+          final responseStr = response.toString();
 
-        if (responseStr.contains('switch_room_page') &&
-            responseStr.contains(navInfo.targetRoom!)) {
-          modelSwitched = true;
-        }
+          if (responseStr.contains('switch_room_page') &&
+              responseStr.contains(navInfo.targetRoom!)) {
+            modelSwitched = true;
+          }
 
-        if (!modelSwitched) {
-          debugPrint(
-            '⚠️ Auto-correcting navigation: Forcing switch to ${navInfo.targetRoom}',
-          );
-          return LlmResponse(
-            functionCalls: [
-              LlmFunctionCall('switch_room_page', {
-                'room_name': navInfo.targetRoom,
-              }, continueAfterNavigation: true),
-            ],
-          );
-        }
-      }
-
-      if (response is TextResponse) {
-        final responseText = response.token.trim();
-
-        debugPrint('Response text: $responseText');
-
-        String fixedText = responseText;
-
-        final codeBlockMatch = RegExp(
-          r'```(?:json)?\s*([\s\S]*?)\s*```',
-        ).firstMatch(responseText);
-        if (codeBlockMatch != null) {
-          fixedText = codeBlockMatch.group(1)!.trim();
-        } else {
-          final start = fixedText.indexOf('{');
-          final end = fixedText.lastIndexOf('}');
-          if (start != -1 && end != -1 && end > start) {
-            fixedText = fixedText.substring(start, end + 1);
+          if (!modelSwitched) {
+            debugPrint(
+              '⚠️ Auto-correcting navigation: Forcing switch to ${navInfo.targetRoom}',
+            );
+            return LlmResponse(
+              functionCalls: [
+                LlmFunctionCall('switch_room_page', {
+                  'room_name': navInfo.targetRoom,
+                }, continueAfterNavigation: true),
+              ],
+            );
           }
         }
 
-        try {
-          final jsonResponse = jsonDecode(fixedText);
+        if (response is TextResponse) {
+          final responseText = response.token.trim();
 
-          LlmFunctionCall? processCall(Map<String, dynamic> call) {
-            if (!call.containsKey('function_name') ||
-                !call.containsKey('arguments')) {
-              return null;
+          debugPrint('Response text: $responseText');
+
+          String fixedText = responseText;
+
+          final codeBlockMatch = RegExp(
+            r'```(?:json)?\s*([\s\S]*?)\s*```',
+          ).firstMatch(responseText);
+          if (codeBlockMatch != null) {
+            fixedText = codeBlockMatch.group(1)!.trim();
+          } else {
+            final start = fixedText.indexOf('{');
+            final end = fixedText.lastIndexOf('}');
+            if (start != -1 && end != -1 && end > start) {
+              fixedText = fixedText.substring(start, end + 1);
             }
+          }
 
-            var name = call['function_name'] as String;
-            final rawArgs = call['arguments'];
-            Map<String, dynamic> args = {};
+          try {
+            final jsonResponse = jsonDecode(fixedText);
 
-            if (name == 'toggle_garage_light') name = 'toggle_light_garage';
-            if (name == 'toggle_garage_door') name = 'toggle_garage_gate';
-            if (name == 'toggle_room_page') name = 'switch_room_page';
-
-            if (rawArgs is List) {
-              debugPrint(
-                '⚠️ Warning: LLM returned arguments as List. Attempting to map to parameters.',
-              );
-
-              final toolDef = tools.firstWhere(
-                (t) => t['function']['name'] == name,
-                orElse: () => {},
-              );
-
-              if (toolDef.isNotEmpty) {
-                final params =
-                    toolDef['function']['parameters']['properties']
-                        as Map<String, dynamic>;
-                final paramNames = params.keys.toList();
-
-                for (
-                  var i = 0;
-                  i < rawArgs.length && i < paramNames.length;
-                  i++
-                ) {
-                  args[paramNames[i]] = rawArgs[i];
-                }
+            LlmFunctionCall? processCall(Map<String, dynamic> call) {
+              if (!call.containsKey('function_name') ||
+                  !call.containsKey('arguments')) {
+                return null;
               }
-            } else if (rawArgs is Map) {
-              args = Map<String, dynamic>.from(rawArgs);
-            }
 
-            final convertedArgs = <String, dynamic>{};
-            args.forEach((k, v) {
-              if (v is int) {
-                convertedArgs[k] = v.toDouble();
-              } else if (v is String) {
-                if (v.toLowerCase() == 'true') {
-                  convertedArgs[k] = true;
-                } else if (v.toLowerCase() == 'false') {
-                  convertedArgs[k] = false;
+              var name = call['function_name'] as String;
+              final rawArgs = call['arguments'];
+              Map<String, dynamic> args = {};
+
+              if (name == 'toggle_garage_light') name = 'toggle_light_garage';
+              if (name == 'toggle_garage_door') name = 'toggle_garage_gate';
+              if (name == 'toggle_room_page') name = 'switch_room_page';
+
+              if (rawArgs is List) {
+                debugPrint(
+                  '⚠️ Warning: LLM returned arguments as List. Attempting to map to parameters.',
+                );
+
+                final toolDef = tools.firstWhere(
+                  (t) => t['function']['name'] == name,
+                  orElse: () => {},
+                );
+
+                if (toolDef.isNotEmpty) {
+                  final params =
+                      toolDef['function']['parameters']['properties']
+                          as Map<String, dynamic>;
+                  final paramNames = params.keys.toList();
+
+                  for (
+                    var i = 0;
+                    i < rawArgs.length && i < paramNames.length;
+                    i++
+                  ) {
+                    args[paramNames[i]] = rawArgs[i];
+                  }
+                }
+              } else if (rawArgs is Map) {
+                args = Map<String, dynamic>.from(rawArgs);
+              }
+
+              final convertedArgs = <String, dynamic>{};
+              args.forEach((k, v) {
+                if (v is int) {
+                  convertedArgs[k] = v.toDouble();
+                } else if (v is String) {
+                  if (v.toLowerCase() == 'true') {
+                    convertedArgs[k] = true;
+                  } else if (v.toLowerCase() == 'false') {
+                    convertedArgs[k] = false;
+                  } else {
+                    convertedArgs[k] = v;
+                  }
                 } else {
                   convertedArgs[k] = v;
                 }
-              } else {
-                convertedArgs[k] = v;
-              }
-            });
+              });
 
-            return LlmFunctionCall(
-              name,
-              convertedArgs,
-              continueAfterNavigation: name == 'switch_room_page',
-            );
-          }
-
-          if (jsonResponse is Map &&
-              jsonResponse.containsKey('function_name') &&
-              jsonResponse.containsKey('arguments')) {
-            final call = processCall(jsonResponse as Map<String, dynamic>);
-            if (call != null) {
-              return LlmResponse(functionCalls: [call]);
+              return LlmFunctionCall(
+                name,
+                convertedArgs,
+                continueAfterNavigation: name == 'switch_room_page',
+              );
             }
-          } else if (jsonResponse is Map &&
-              jsonResponse.containsKey('function_calls')) {
-            final calls = jsonResponse['function_calls'] as List;
-            final functionCalls = <LlmFunctionCall>[];
 
-            for (final callItem in calls) {
-              if (callItem is Map) {
-                final call = processCall(callItem as Map<String, dynamic>);
-                if (call != null) {
-                  functionCalls.add(call);
+            if (jsonResponse is Map &&
+                jsonResponse.containsKey('function_name') &&
+                jsonResponse.containsKey('arguments')) {
+              final call = processCall(jsonResponse as Map<String, dynamic>);
+              if (call != null) {
+                return LlmResponse(functionCalls: [call]);
+              }
+            } else if (jsonResponse is Map &&
+                jsonResponse.containsKey('function_calls')) {
+              final calls = jsonResponse['function_calls'] as List;
+              final functionCalls = <LlmFunctionCall>[];
+
+              for (final callItem in calls) {
+                if (callItem is Map) {
+                  final call = processCall(callItem as Map<String, dynamic>);
+                  if (call != null) {
+                    functionCalls.add(call);
+                  }
                 }
               }
+              return LlmResponse(functionCalls: functionCalls);
             }
-            return LlmResponse(functionCalls: functionCalls);
+          } catch (e) {
+            debugPrint('JSON parse failed: $e');
           }
-        } catch (e) {
-          debugPrint('JSON parse failed: $e');
         }
-      }
 
-      return LlmResponse(text: response.toString().trim());
+        return LlmResponse(text: response.toString().trim());
+      } finally {
+        debugPrint('🧹 Closing active LLM chat session...');
+        await chat.close();
+      }
     } catch (e) {
       return LlmResponse(text: 'Error generating response: $e');
     }

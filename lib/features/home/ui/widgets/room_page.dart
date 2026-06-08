@@ -3,6 +3,7 @@ import 'package:flutter_ui_agent/flutter_ui_agent.dart';
 
 import '../../models/room_model.dart';
 import '../../providers/app_state.dart';
+import 'smart_mirror_widget.dart';
 
 class RoomPage extends StatelessWidget {
   final Room room;
@@ -19,6 +20,10 @@ class RoomPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (room.roomName == RoomName.smartMirror) {
+      return SmartMirrorWidget(room: room, appState: appState);
+    }
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(

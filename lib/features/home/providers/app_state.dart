@@ -9,6 +9,7 @@ class AppState extends ChangeNotifier {
     Room(roomName: RoomName.bedroom),
     Room(roomName: RoomName.kitchen),
     Room(roomName: RoomName.garage),
+    Room(roomName: RoomName.smartMirror),
   ];
 
   // Method to update a room and notify listeners
